@@ -8,7 +8,7 @@ compiler/**/*.tie 源码（sm_err_msg / g_err / return "..." / 消息表 / panic
         ▼
 diagcode_cat.gen.tie（tiec 内置查表：exact + 最长前缀）
 diagcodes.data.tie（td 表字面量清单：code/key/name/family/src/template；性能敏感读取用 zd 变体）
-        │  docs/gen-docs.ps1（本仓库）
+        │  docs/gen-docs.tsh.tie（本仓库，tsh 角色）
         ▼
 docs/docs/error.md（按标号：成因 + 常见解决方案）
 ```
@@ -24,9 +24,9 @@ docs/docs/error.md（按标号：成因 + 常见解决方案）
 1. 在 tie-main 改消息文本 → 重新生成目录：
    `powershell -File scripts/gen-diagcodes.tie（tie 生成器）`（tie-main 仓库，tie 语言生成器）。
 2. 同步 `diagcodes.data.tie`（及性能敏感用的 `diagcodes.zd`）到本仓库 `docs/`。
-3. 重建文档：`powershell -File docs/gen-docs.ps1`（本仓库）。
-4. 若希望该标号有**专属**成因/方案，在 `docs/gen-docs.ps1` 的 `$nameMap`
-   （按消息名前缀）里补一条；否则自动落到家族/前缀兜底说明。
+3. 重建文档：`<tsh-main> -f docs/gen-docs.tsh.tie`（本仓库；在 tdiag 根执行）。
+4. 若希望该标号有**专属**成因/方案，在 `docs/gen-docs.tsh.tie` 的 `nameMap` 段
+   （按消息名前缀，`nkeyN`/`ncauN`/`nfixN`）里补一条；否则自动落到家族/前缀兜底说明。
 5. 提交两仓库（tie-main：目录 + 生成器；本仓库：td 清单 + 文档）。
 
 ## 警告标号表 / Warning registry

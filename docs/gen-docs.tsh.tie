@@ -1,0 +1,521 @@
+type tie<tsh>
+// gen-docs.tsh.tie —— tdiag 家族文档生成器（tsh 角色，全面代替原 gen-docs.ps1）
+// ============================================================
+// 读 docs/diagcodes.data.tie（td 数据表字面量，由 tie-main/scripts/gen-diagcodes.tie
+// 生成；不用 JSON），按家族分节输出单一 docs/error.md：每条标号含 消息模板 /
+// 出处 / 成因 / 常见解决方案。成因与方案来自内置 nameMap/prefMap（按消息名前缀）；
+// 未覆盖条目用家族级默认说明兜底。
+//
+// 运行（在 tdiag 仓库根）：
+//   <tsh-main> -f docs\gen-docs.tsh.tie [输出路径(默认 docs/error.md)]
+// 输出与 gen-docs.ps1 逐字节一致（\r\n=AppendLine；famIntro 内联 LF；转义见 do_unescape）。
+//
+// tsh 运行时约束（已规避）：
+//  1. 顶层/函数内不允许“一行多 `var`”，块内 `; return`；→ 均已改写；
+//  2. 有局部变量的函数互相调用会破坏调用方局部槽 → 辅助函数一律
+//     无参数、零局部变量、仅经全局量 g_* 读写；
+//  3. 长时运行后“当前函数”后续新声明的局部变量可能失效 → 读取与生成
+//     拆分为两个独立函数 read_input / emit_all，由顶层顺序调用。
+//  4. 插入排序不依赖 `j>=0 && fc[j]`（无短路）→ 双层 if 改写。
+
+// ---------- 全局子函数状态 ----------
+var g_line = ""
+var g_needle = ""
+var g_pos = -1
+var g_i = 0
+var g_hn = 0
+var g_nn = 0
+var g_start = 0
+var g_buf = ""
+var g_c = ""
+var g_nx = ""
+var g_n = 0
+
+// 在 g_line 中找 g_needle 的首次出现 → g_pos（未找到 -1）。
+func do_find() {
+    g_hn = str_len(g_line)
+    g_nn = str_len(g_needle)
+    g_pos = -1
+    if g_nn == 0 {
+        g_pos = 0
+        return
+    }
+    if g_nn > g_hn {
+        return
+    }
+    g_i = 0
+    while g_i <= g_hn - g_nn {
+        if substr(g_line, g_i, g_i + g_nn) == g_needle {
+            g_pos = g_i
+            return
+        }
+        g_i = g_i + 1
+    }
+}
+
+// 从 g_i 起跳过空白。
+func do_skipws() {
+    g_n = str_len(g_line)
+    while g_i < g_n {
+        g_c = substr(g_line, g_i, g_i + 1)
+        if g_c == " " || g_c == "\t" {
+            g_i = g_i + 1
+        } else {
+            return
+        }
+    }
+}
+
+// 从 g_start（开引号后一位）解码 td 转义直到未转义闭引号 → g_buf。
+func do_unescape() {
+    g_buf = ""
+    g_n = str_len(g_line)
+    g_i = g_start
+    while g_i < g_n {
+        g_c = substr(g_line, g_i, g_i + 1)
+        if g_c == "\\" {
+            if g_i + 1 < g_n {
+                g_nx = substr(g_line, g_i + 1, g_i + 2)
+                if g_nx == "n" { g_buf = g_buf + "\n" }
+                else if g_nx == "r" { g_buf = g_buf + "\r" }
+                else if g_nx == "t" { g_buf = g_buf + "\t" }
+                else if g_nx == "\"" { g_buf = g_buf + "\"" }
+                else if g_nx == "\\" { g_buf = g_buf + "\\" }
+                else { g_buf = g_buf + g_nx }
+                g_i = g_i + 2
+            } else {
+                g_buf = g_buf + "\\"
+                g_i = g_i + 1
+            }
+        } else if g_c == "\"" {
+            return
+        } else {
+            g_buf = g_buf + g_c
+            g_i = g_i + 1
+        }
+    }
+}
+
+// 从 g_i 起读取连续数字 → g_buf。
+func do_digits() {
+    g_buf = ""
+    while g_i < str_len(g_line) {
+        g_c = substr(g_line, g_i, g_i + 1)
+        if g_c >= "0" && g_c <= "9" {
+            g_buf = g_buf + g_c
+            g_i = g_i + 1
+        } else {
+            return
+        }
+    }
+}
+
+// ---------- 家族介绍（逐字取自 ps1 输出，内联 LF；fam9 第2行含 TAB） ----------
+var f2 = "tie 语法错误（解析阶段）：期望 X 实际 Y、标签只能用于循环、extern 只能顶层、\n赋值目标非法等。多为漏分号、多/缺括号、关键字位置错误。 / Parser errors:\nexpected X but got Y, label misuse, extern placement, bad assignment target —\nusually missing semicolons/brackets or keyword misplacement."
+var f3 = "tie 语义错误（类型/作用域/调用/移动/泛型/宏）：最丰富的一族。类型不匹配、\n未定义符号、ref 实参规则、unsafe 门禁、移动语义、泛型实例化、宏展开都在此。\n多数可按「名字 + 期望/实际」直接定位。 / Semantic errors: the largest family —\ntypes, scopes, calls, ref args, unsafe gates, move semantics, generics, macro\nexpansion. Most resolve via the name plus expected/actual."
+var f4 = "tie 运行时/解释器错误（REPL 与内置函数）：内置函数参数错误（len/str_char/…）、\n除零、下标越界、桥函数未 tie 化等。 / Runtime/interpreter errors: builtin\nargument mistakes, divide-by-zero, index out of range, un-tie'd bridge fns."
+var f5 = "tie CLI 与配置错误：参数错误、角色声明、config 解析、compress-data、文件读写。\n检查命令行参数、头部角色声明、config.data.tie 与 roles 段格式。 / CLI & config\nerrors: args, role headers, config parsing, compress-data, file IO."
+var f6 = "tie 后端与 IR 错误：opt/clang/llvm-ar/lld 工具链失败、tieir 序列化、后端未接入。\n多为环境问题（LLVM 工具缺失/版本）或编译器内部错误。 / Backend & IR errors:\ntoolchain (opt/clang/llvm-ar/lld) failures, tieir serialization, unimplemented\nbackend — often environment (missing LLVM tools) or compiler-internal."
+var f7 = "REPL v1 暂不支持项：struct/enum/import/using/元组/字段访问/goto 等解释器路径\n限制——请改用编译路径（tiec 文件编译）。 / REPL v1 limitations: use the\ncompile path (tiec on a file) for these constructs."
+var f9 = "内部错误（E9）：编译器自身断言/未实现分支。请提交 issue 并附最小复现与\n\tiec -O0 输出。 / Internal errors: compiler bugs — file an issue with a\nminimal repro."
+
+// ---------- 家族名 ----------
+var fnm1 = "词法 / Lexer"
+var fnm2 = "语法 / Parser"
+var fnm3 = "语义 / Semantic"
+var fnm4 = "运行时 / Runtime"
+var fnm5 = "CLI 与配置 / CLI & Config"
+var fnm6 = "后端与 IR / Backend & IR"
+var fnm7 = "REPL"
+var fnm9 = "内部错误 / Internal"
+
+// ---------- 按消息名精确覆盖（33 键；名字稳定，码号随重生成漂移）----------
+var nkey0 = "字符串未闭合"
+var ncau0 = "字符串字面量缺少结束引号（词法扫描）"
+var nfix0 = "补齐结束引号；检查多行字符串是否需拼接"
+var nkey1 = "字符字面量未闭合"
+var ncau1 = "字符字面量缺少结束引号"
+var nfix1 = "补齐结束引号"
+var nkey2 = "字符字面量只能包含一个字符"
+var ncau2 = "字符字面量里放了多个字符/码元"
+var nfix2 = "只保留一个字符；转义序列用 \\\\u 或直接字符"
+var nkey3 = "无法识别的字符"
+var ncau3 = "扫描到非法符号"
+var nfix3 = "删除或替换为合法符号"
+var nkey4 = "未知转义序列"
+var ncau4 = "\\\\ 后的转义符不是支持项"
+var nfix4 = "使用支持的转义（\\\\n \\\\t \\\\r \\\\\" \\\\\\\\ 等）"
+var nkey5 = "块注释未闭合"
+var ncau5 = "块注释 /* ... */ 没有闭合 */"
+var nfix5 = "补齐 */，或将误写的 /* 改为 /"
+var nkey6 = "转义符后缺少字符"
+var ncau6 = "转义符 \\\\ 后没有字符（字符串尾）"
+var nfix6 = "补齐转义字符，或检查字符串是否提前终止"
+var nkey7 = "期望标识符"
+var ncau7 = "该位置期望标识符（名字/关键字），实际是别的符号"
+var nfix7 = "检查拼写与关键字位置；确认未遗漏标识符名"
+var nkey8 = "期望类型"
+var ncau8 = "该位置期望类型表达式"
+var nfix8 = "补齐类型标注，并检查类型名与泛型实参"
+var nkey9 = "无法在"
+var ncau9 = "该符号后不能开始表达式"
+var nfix9 = "检查运算符/括号顺序"
+var nkey10 = "extern 声明只能出现在文件顶层"
+var ncau10 = "extern 声明写进了函数体内"
+var nfix10 = "移到文件顶层"
+var nkey11 = "不能在这里嵌套代码块"
+var ncau11 = "嵌套代码块出现在不允许的位置"
+var nfix11 = "调整块结构"
+var nkey12 = "赋值目标必须是变量或字段"
+var ncau12 = "赋值左侧不是可写目标"
+var nfix12 = "改为变量/字段/下标 t[i]"
+var nkey13 = "table_at() 下标必须是整数"
+var ncau13 = "table_at 下标不是整数"
+var nfix13 = "用整数下标（i64）"
+var nkey14 = "atomic.store() 值类型不匹配"
+var ncau14 = "atomic.store 的值与原子元素类型不一致"
+var nfix14 = "按 atomic<T> 的 T 传值"
+var nkey15 = "asm! 内联汇编必须在 unsafe 块或 unsafe 函数中使用"
+var ncau15 = "asm! 用在安全代码里"
+var nfix15 = "包进 unsafe { } 或标 unsafe fn"
+var nkey16 = "'?' 解包错误类型不匹配"
+var ncau16 = "? 解包的操作数不是 Result/Option，或其错误类型与函数返回不一致"
+var nfix16 = "核对操作数与返回类型"
+var nkey17 = "'?' 解包只能用于返回 Result/Option 的函数内"
+var ncau17 = "? 用在非 Result/Option 返回函数里"
+var nfix17 = "让函数返回 Result/Option"
+var nkey18 = "函数重复定义"
+var ncau18 = "同名函数/签名重复注册"
+var nfix18 = "去重；不同命名空间同名用完整前缀调用"
+var nkey19 = "函数值调用 '?' 的 ref 参数需要可寻址的表变量实参"
+var ncau19 = "ref 实参是字面量/下标/调用结果，不可取地址"
+var nfix19 = "先存成表变量再传"
+var nkey20 = "变量未声明"
+var ncau20 = "使用未声明的变量"
+var nfix20 = "先声明；检查作用域/拼写"
+var nkey21 = "变量重复声明"
+var ncau21 = "同一作用域重复声明同名变量"
+var nfix21 = "去重或换名"
+var nkey22 = "token_tag_at 下标越界"
+var ncau22 = "token 流下标越界"
+var nfix22 = "先 len(token) 再取"
+var nkey23 = "str_len 只支持字符串"
+var ncau23 = "str_len 参数不是字符串"
+var nfix23 = "传字符串"
+var nkey24 = "to_string 需要一个数字参数"
+var ncau24 = "to_string 参数不是数字"
+var nfix24 = "传数字（i64/f64）"
+var nkey25 = "config 容器未闭合"
+var ncau25 = "config 表/数组缺结束括号"
+var nfix25 = "补 ]"
+var nkey26 = "config 值意外字符"
+var ncau26 = "config 值位置出现非法字符"
+var nfix26 = "检查值语法（数字/字符串/表/数组）"
+var nkey27 = "config 数字缺少整数部分"
+var ncau27 = "config 数字以 . 开头缺整数部分"
+var nfix27 = "补整数部分（如 0.5）"
+var nkey28 = "构建配置加载失败"
+var ncau28 = "config.data.tie 加载/合并失败"
+var nfix28 = "检查语法与合并规则（顶层须为表）"
+var nkey29 = "参数错误"
+var ncau29 = "CLI 参数错误"
+var nfix29 = "运行 tiec --help 查看用法"
+var nkey30 = "struct 类型未定义"
+var ncau30 = "引用了未声明的 struct 类型"
+var nfix30 = "先声明 struct 或 import"
+var nkey31 = "guard 不支持方法"
+var ncau31 = "guard<cap> 上调用了不支持的方法"
+var nfix31 = "检查 guard 方法集"
+var nkey32 = "内部错误"
+var ncau32 = "编译器内部断言/未实现分支"
+var nfix32 = "提交 issue，附最小复现与 -O0 输出"
+
+// ---------- 按消息名前缀覆盖（20 项；最先命中者取用） ----------
+var pkey0 = "变量"
+var pcau0 = "变量声明/使用问题：类型不匹配、重复声明、未声明、const 修改、移动后使用等"
+var pfix0 = "按消息名细分：类型标注或初始化；const 不可赋值；move 后用 clone 复制"
+var pkey1 = "参数"
+var pcau1 = "函数参数声明问题：默认值、ref 修饰、变参、类型不匹配"
+var pfix1 = "默认值须为字面量且连续排在必选后；ref 仅表参数；变参须为最后一个且元素标量"
+var pkey2 = "调用"
+var pcau2 = "调用/实参类型或数量不匹配、ref 实参非可寻址"
+var pfix2 = "核对签名：实参类型/个数；ref 实参必须是可寻址表变量"
+var pkey3 = "函数"
+var pcau3 = "函数未定义/重复定义/私有函数跨命名空间/参数错误"
+var pfix3 = "检查命名空间与 pub 修饰；同名函数去重"
+var pkey4 = "方法"
+var pcau4 = "方法调用的对象不是 struct 实例，或参数/首参类型不匹配"
+var pfix4 = "接收者须为 struct 实例；方法首参类型须与 struct 匹配"
+var pkey5 = "类型"
+var pcau5 = "类型未定义/缺少类型实参/约束不满足/实参过多"
+var pfix5 = "显式指定类型实参（如 Box<i64>）；泛型约束须 impl 对应 port"
+var pkey6 = "构造"
+var pcau6 = "struct/enum 构造参数数量或类型不匹配"
+var pfix6 = "按字段声明顺序传参；缺省用默认值"
+var pkey7 = "枚举"
+var pcau7 = "枚举变体不存在/重复定义/payload 类型白名单限制/== 不支持"
+var pfix7 = "检查变体名；payload 仅标量；枚举不比较相等"
+var pkey8 = "宏"
+var pcau8 = "宏未定义/实参缺失/展开失败/返回类型错误"
+var pfix8 = "检查宏名与 code 实参；宏须返回 code 值"
+var pkey9 = "内部错误"
+var pcau9 = "编译器内部状态不一致"
+var pfix9 = "提交 issue 附最小复现"
+var pkey10 = "导入文件"
+var pcau10 = "import 的文件不存在或解析/语义失败"
+var pfix10 = "检查路径与文件内容；补缺失文件"
+var pkey11 = "顶层"
+var pcau11 = "顶层只允许函数/类/import/using/命名空间/全局变量/extern"
+var pfix11 = "把声明移到函数体内外的正确层级"
+var pkey12 = "赋值"
+var pcau12 = "赋值目标未声明/类型不匹配/const 赋值"
+var pfix12 = "先声明；类型一致；const 不可重新赋值"
+var pkey13 = "下标"
+var pcau13 = "下标访问/赋值目标非法（仅表/键值表；写须 t[i] 可寻址）"
+var pfix13 = "表用 t[i]；键值表用 m[k]；追加用 table_push"
+var pkey14 = "逻辑"
+var pcau14 = "逻辑运算操作数不是 bool/trit"
+var pfix14 = "把条件转成布尔表达式"
+var pkey15 = "取模"
+var pcau15 = "取模/取负/自增自减操作数类型错误"
+var pfix15 = "整数取模；数字取负；可写数字变量自增自减"
+var pkey16 = "范围"
+var pcau16 = "范围/区间端点类型错误"
+var pfix16 = "整数或字符端点；左闭右开"
+var pkey17 = "比较"
+var pcau17 = "比较运算符用于非数字/字符串/bool/trit 类型"
+var pfix17 = "元组/指针仅 ==/!=；枚举不支持比较"
+var pkey18 = "配置"
+var pcau18 = "config 文件语法错误"
+var pfix18 = "检查括号/引号/转义/数字格式"
+var pkey19 = "运行时错误"
+var pcau19 = "运行时异常（除零/越界/桥函数受限）"
+var pfix19 = "按消息定位：除数非 0、下标在界内、避开受限桥"
+
+// ---------- 结果缓冲 ----------
+var allc: table<string> = table_new_string()
+var alln: table<string> = table_new_string()
+var allt: table<string> = table_new_string()
+var alls: table<string> = table_new_string()
+var allf: table<i64> = table_new_i64()
+var recn: i64 = 0
+var out = ""
+
+// ---------- 读取并解析 td 明细 ----------
+func read_input() {
+    var src = file_read("docs/diagcodes.data.tie")
+    var ls = split_lines(src)
+    var lnum = len(ls)
+    var li: i64 = 0
+    while li < lnum {
+        var t = ls[li]
+        var c0 = ""
+        while str_len(t) > 0 {
+            c0 = substr(t, 0, 1)
+            if c0 == " " || c0 == "\t" {
+                t = substr(t, 1, str_len(t))
+            } else {
+                break
+            }
+        }
+        if str_len(t) == 0 {
+            li = li + 1
+            continue
+        }
+        if !has_prefix(t, "[") {
+            li = li + 1
+            continue
+        }
+        g_line = t
+        g_needle = "\"code\":"
+        do_find()
+        g_i = g_pos + str_len(g_needle)
+        do_skipws()
+        g_start = g_i + 1
+        do_unescape()
+        var cd = g_buf
+        g_needle = "\"name\":"
+        do_find()
+        g_i = g_pos + str_len(g_needle)
+        do_skipws()
+        g_start = g_i + 1
+        do_unescape()
+        var nm = g_buf
+        g_needle = "\"template\":"
+        do_find()
+        g_i = g_pos + str_len(g_needle)
+        do_skipws()
+        g_start = g_i + 1
+        do_unescape()
+        var tp = g_buf
+        g_needle = "\"src\":"
+        do_find()
+        g_i = g_pos + str_len(g_needle)
+        do_skipws()
+        g_start = g_i + 1
+        do_unescape()
+        var sr = g_buf
+        g_needle = "\"family\":"
+        do_find()
+        g_i = g_pos + str_len(g_needle)
+        do_skipws()
+        do_digits()
+        var fm = parse_int(g_buf)
+        table_push(allc, cd)
+        table_push(alln, nm)
+        table_push(allt, tp)
+        table_push(alls, sr)
+        table_push(allf, fm)
+        recn = recn + 1
+        li = li + 1
+    }
+}
+
+// ---------- 生成（独立函数，避开长 run 后同函数后续局部失效） ----------
+func emit_all() {
+    out = out + "# 错误标号大全 / Error codes" + "\r\n"
+    out = out + "\r\n"
+    out = out + "> tie 诊断错误共分九大家族（词法/语法/语义/运行时/CLI 与配置/后端与 IR/REPL/内部错误），" + "\r\n"
+    out = out + "> 以下按家族分节、族内按标号排序，每条含**消息模板**、**出处**、**成因（如何发生）**与**常见解决方案**。" + "\r\n"
+    out = out + "> Errors are grouped by family below (lexer, parser, semantic, runtime, CLI & config, backend & IR, REPL, internal); each entry lists the message template, source, cause and a common fix." + "\r\n"
+    out = out + "\r\n"
+    var fam: i64 = 1
+    while fam <= 9 {
+        if fam == 8 {
+            fam = fam + 1
+            continue
+        }
+        var fdisp = fnm1
+        if fam == 2 { fdisp = fnm2 } else if fam == 3 { fdisp = fnm3 } else if fam == 4 { fdisp = fnm4 } else if fam == 5 { fdisp = fnm5 } else if fam == 6 { fdisp = fnm6 } else if fam == 7 { fdisp = fnm7 } else if fam == 9 { fdisp = fnm9 }
+        out = out + "## 家族 " + to_string(fam) + " " + fdisp + "\r\n"
+        out = out + "\r\n"
+        var fc: table<string> = table_new_string()
+        var fn: table<string> = table_new_string()
+        var ft: table<string> = table_new_string()
+        var fsx: table<string> = table_new_string()
+        var cnt: i64 = 0
+        var ri: i64 = 0
+        while ri < recn {
+            if allf[ri] == fam {
+                table_push(fc, allc[ri])
+                table_push(fn, alln[ri])
+                table_push(ft, allt[ri])
+                table_push(fsx, alls[ri])
+                cnt = cnt + 1
+            }
+            ri = ri + 1
+        }
+        if cnt == 0 {
+            out = out + "_（暂无条目 / no entries）_" + "\r\n"
+            out = out + "\r\n"
+            fam = fam + 1
+            continue
+        }
+        if fam == 2 { out = out + f2 } else if fam == 3 { out = out + f3 } else if fam == 4 { out = out + f4 } else if fam == 5 { out = out + f5 } else if fam == 6 { out = out + f6 } else if fam == 7 { out = out + f7 } else if fam == 9 { out = out + f9 }
+        out = out + "\r\n"
+        out = out + "\r\n"
+        // 按码号排序（内建 sort_strings 字节序；码号等长零填充即标号序）
+        var scodes = sort_strings(fc)
+        var mcnt = len(scodes)
+        // 逐条输出（按排序后码号顺序）
+        var mk: i64 = 0
+        while mk < mcnt {
+            var cd2 = scodes[mk]
+            var findi: i64 = 0
+            var fi = -1
+            while findi < cnt {
+                if fc[findi] == cd2 {
+                    fi = findi
+                    break
+                }
+                findi = findi + 1
+            }
+            var nm2 = fn[fi]
+            var templ = ft[fi]
+            var srcc = fsx[fi]
+            var bs = ""
+            var bestlen: i64 = 0
+            var ncau = ""
+            var nfix = ""
+            if has_prefix(nm2, nkey0) { if str_len(nkey0) > bestlen { bs = nkey0; ncau = ncau0; nfix = nfix0; bestlen = str_len(nkey0) } }
+            if has_prefix(nm2, nkey1) { if str_len(nkey1) > bestlen { bs = nkey1; ncau = ncau1; nfix = nfix1; bestlen = str_len(nkey1) } }
+            if has_prefix(nm2, nkey2) { if str_len(nkey2) > bestlen { bs = nkey2; ncau = ncau2; nfix = nfix2; bestlen = str_len(nkey2) } }
+            if has_prefix(nm2, nkey3) { if str_len(nkey3) > bestlen { bs = nkey3; ncau = ncau3; nfix = nfix3; bestlen = str_len(nkey3) } }
+            if has_prefix(nm2, nkey4) { if str_len(nkey4) > bestlen { bs = nkey4; ncau = ncau4; nfix = nfix4; bestlen = str_len(nkey4) } }
+            if has_prefix(nm2, nkey5) { if str_len(nkey5) > bestlen { bs = nkey5; ncau = ncau5; nfix = nfix5; bestlen = str_len(nkey5) } }
+            if has_prefix(nm2, nkey6) { if str_len(nkey6) > bestlen { bs = nkey6; ncau = ncau6; nfix = nfix6; bestlen = str_len(nkey6) } }
+            if has_prefix(nm2, nkey7) { if str_len(nkey7) > bestlen { bs = nkey7; ncau = ncau7; nfix = nfix7; bestlen = str_len(nkey7) } }
+            if has_prefix(nm2, nkey8) { if str_len(nkey8) > bestlen { bs = nkey8; ncau = ncau8; nfix = nfix8; bestlen = str_len(nkey8) } }
+            if has_prefix(nm2, nkey9) { if str_len(nkey9) > bestlen { bs = nkey9; ncau = ncau9; nfix = nfix9; bestlen = str_len(nkey9) } }
+            if has_prefix(nm2, nkey10) { if str_len(nkey10) > bestlen { bs = nkey10; ncau = ncau10; nfix = nfix10; bestlen = str_len(nkey10) } }
+            if has_prefix(nm2, nkey11) { if str_len(nkey11) > bestlen { bs = nkey11; ncau = ncau11; nfix = nfix11; bestlen = str_len(nkey11) } }
+            if has_prefix(nm2, nkey12) { if str_len(nkey12) > bestlen { bs = nkey12; ncau = ncau12; nfix = nfix12; bestlen = str_len(nkey12) } }
+            if has_prefix(nm2, nkey13) { if str_len(nkey13) > bestlen { bs = nkey13; ncau = ncau13; nfix = nfix13; bestlen = str_len(nkey13) } }
+            if has_prefix(nm2, nkey14) { if str_len(nkey14) > bestlen { bs = nkey14; ncau = ncau14; nfix = nfix14; bestlen = str_len(nkey14) } }
+            if has_prefix(nm2, nkey15) { if str_len(nkey15) > bestlen { bs = nkey15; ncau = ncau15; nfix = nfix15; bestlen = str_len(nkey15) } }
+            if has_prefix(nm2, nkey16) { if str_len(nkey16) > bestlen { bs = nkey16; ncau = ncau16; nfix = nfix16; bestlen = str_len(nkey16) } }
+            if has_prefix(nm2, nkey17) { if str_len(nkey17) > bestlen { bs = nkey17; ncau = ncau17; nfix = nfix17; bestlen = str_len(nkey17) } }
+            if has_prefix(nm2, nkey18) { if str_len(nkey18) > bestlen { bs = nkey18; ncau = ncau18; nfix = nfix18; bestlen = str_len(nkey18) } }
+            if has_prefix(nm2, nkey19) { if str_len(nkey19) > bestlen { bs = nkey19; ncau = ncau19; nfix = nfix19; bestlen = str_len(nkey19) } }
+            if has_prefix(nm2, nkey20) { if str_len(nkey20) > bestlen { bs = nkey20; ncau = ncau20; nfix = nfix20; bestlen = str_len(nkey20) } }
+            if has_prefix(nm2, nkey21) { if str_len(nkey21) > bestlen { bs = nkey21; ncau = ncau21; nfix = nfix21; bestlen = str_len(nkey21) } }
+            if has_prefix(nm2, nkey22) { if str_len(nkey22) > bestlen { bs = nkey22; ncau = ncau22; nfix = nfix22; bestlen = str_len(nkey22) } }
+            if has_prefix(nm2, nkey23) { if str_len(nkey23) > bestlen { bs = nkey23; ncau = ncau23; nfix = nfix23; bestlen = str_len(nkey23) } }
+            if has_prefix(nm2, nkey24) { if str_len(nkey24) > bestlen { bs = nkey24; ncau = ncau24; nfix = nfix24; bestlen = str_len(nkey24) } }
+            if has_prefix(nm2, nkey25) { if str_len(nkey25) > bestlen { bs = nkey25; ncau = ncau25; nfix = nfix25; bestlen = str_len(nkey25) } }
+            if has_prefix(nm2, nkey26) { if str_len(nkey26) > bestlen { bs = nkey26; ncau = ncau26; nfix = nfix26; bestlen = str_len(nkey26) } }
+            if has_prefix(nm2, nkey27) { if str_len(nkey27) > bestlen { bs = nkey27; ncau = ncau27; nfix = nfix27; bestlen = str_len(nkey27) } }
+            if has_prefix(nm2, nkey28) { if str_len(nkey28) > bestlen { bs = nkey28; ncau = ncau28; nfix = nfix28; bestlen = str_len(nkey28) } }
+            if has_prefix(nm2, nkey29) { if str_len(nkey29) > bestlen { bs = nkey29; ncau = ncau29; nfix = nfix29; bestlen = str_len(nkey29) } }
+            if has_prefix(nm2, nkey30) { if str_len(nkey30) > bestlen { bs = nkey30; ncau = ncau30; nfix = nfix30; bestlen = str_len(nkey30) } }
+            if has_prefix(nm2, nkey31) { if str_len(nkey31) > bestlen { bs = nkey31; ncau = ncau31; nfix = nfix31; bestlen = str_len(nkey31) } }
+            if has_prefix(nm2, nkey32) { if str_len(nkey32) > bestlen { bs = nkey32; ncau = ncau32; nfix = nfix32; bestlen = str_len(nkey32) } }
+            var cause = ""
+            var fix = ""
+            if bs != "" {
+                cause = ncau
+                fix = nfix
+            } else {
+                var gi: i64 = 0
+                var matched = false
+                while gi < 20 {
+                    var pk = pkey0
+                    if gi == 1 { pk = pkey1 } else if gi == 2 { pk = pkey2 } else if gi == 3 { pk = pkey3 } else if gi == 4 { pk = pkey4 } else if gi == 5 { pk = pkey5 } else if gi == 6 { pk = pkey6 } else if gi == 7 { pk = pkey7 } else if gi == 8 { pk = pkey8 } else if gi == 9 { pk = pkey9 } else if gi == 10 { pk = pkey10 } else if gi == 11 { pk = pkey11 } else if gi == 12 { pk = pkey12 } else if gi == 13 { pk = pkey13 } else if gi == 14 { pk = pkey14 } else if gi == 15 { pk = pkey15 } else if gi == 16 { pk = pkey16 } else if gi == 17 { pk = pkey17 } else if gi == 18 { pk = pkey18 } else if gi == 19 { pk = pkey19 }
+                    if has_prefix(nm2, pk) {
+                        if gi == 0 { cause = pcau0; fix = pfix0 } else if gi == 1 { cause = pcau1; fix = pfix1 } else if gi == 2 { cause = pcau2; fix = pfix2 } else if gi == 3 { cause = pcau3; fix = pfix3 } else if gi == 4 { cause = pcau4; fix = pfix4 } else if gi == 5 { cause = pcau5; fix = pfix5 } else if gi == 6 { cause = pcau6; fix = pfix6 } else if gi == 7 { cause = pcau7; fix = pfix7 } else if gi == 8 { cause = pcau8; fix = pfix8 } else if gi == 9 { cause = pcau9; fix = pfix9 } else if gi == 10 { cause = pcau10; fix = pfix10 } else if gi == 11 { cause = pcau11; fix = pfix11 } else if gi == 12 { cause = pcau12; fix = pfix12 } else if gi == 13 { cause = pcau13; fix = pfix13 } else if gi == 14 { cause = pcau14; fix = pfix14 } else if gi == 15 { cause = pcau15; fix = pfix15 } else if gi == 16 { cause = pcau16; fix = pfix16 } else if gi == 17 { cause = pcau17; fix = pfix17 } else if gi == 18 { cause = pcau18; fix = pfix18 } else if gi == 19 { cause = pcau19; fix = pfix19 }
+                        matched = true
+                        gi = 20
+                    } else {
+                        gi = gi + 1
+                    }
+                }
+                if !matched {
+                    cause = "见家族说明 / see family guidance；消息模板见下。"
+                    fix = "按模板与「期望/实际」定位；仍未解时参考 [experience.md](experience.md)。"
+                }
+            }
+            out = out + "### " + cd2 + "  " + nm2 + "\r\n"
+            out = out + "\r\n"
+            out = out + "- 消息模板 / template：`" + templ + "`" + "\r\n"
+            out = out + "- 出处 / source：`" + srcc + "`" + "\r\n"
+            out = out + "- 成因（如何发生）/ cause：" + cause + "\r\n"
+            out = out + "- 常见解决方案 / common fix：" + fix + "\r\n"
+            out = out + "\r\n"
+            mk = mk + 1
+        }
+        fam = fam + 1
+    }
+    var _ok = file_write(opath, out)
+}
+
+// ---------- 输出路径（先解析，避免长 run 后污染） ----------
+var opath = "docs/error.md"
+if arg_count() >= 1 {
+    var a1 = arg_at(0)
+    if str_len(a1) > 0 { opath = a1 }
+}
+
+read_input()
+emit_all()
+println("[gen-docs] error.md 生成（" + to_string(recn) + " 条）")
+println("[gen-docs] done")
