@@ -1,11 +1,14 @@
 ﻿# 警告标号大全 / Warning codes
 
-> 每条警告列明**触发条件**、**潜在影响**与**处理建议**。当前编译器发射
-> W00001..W00004、W00020..W00023；其余（W00005..W00019）为规划中的经验型检查，
-> 文档先行。
+> 每条警告列明**触发条件**、**潜在影响**与**处理建议**。经验型检查 W00001..W00019 中，
+> 除 W00006（未使用函数/方法）、W00007（未使用 import）外均已发射；角色配置类
+> W00020..W00023 亦已发射，另有 W00027（整数除零）、W00028（switch 缺少 default）
+> 为近期新增发射项。
 > Each warning documents its trigger conditions, potential impact and a
-> recommended remedy. W00001..W00004 and W00020..W00023 are emitted today;
-> W00005..W00019 are planned checks (documented ahead of implementation).
+> recommended remedy. Of the empirical checks W00001..W00019, all but W00006
+> (unused function/method) and W00007 (unused import) are emitted today; the
+> role-config codes W00020..W00023 are emitted too, plus the newly emitted
+> W00027 (integer division by literal zero) and W00028 (switch missing default).
 
 ## W00001 浮点相等比较 / Float equality comparison
 
@@ -63,28 +66,73 @@
 * 潜在影响 / Impact：按 lib 兜底处理，输出形态与声明不符。
 * 处理建议 / Remedy：将 output 修正为 lib/check/exe/pass 之一。
 
-## 规划中的经验型警告 / Planned warnings
+## W00005 未使用局部变量 / Unused local variable
+
+* 触发条件 / Trigger：函数体内声明的局部变量（`var` / `const`）从未被读取；以 `_`
+  开头的名字按约定视为有意不使用，不报。
+* 潜在影响 / Impact：代码具有误导性（看似使用实则未用），维护时难以判断可否删除。
+* 处理建议 / Remedy：删除，或以 `_` 前缀表明有意不使用。
+
+## W00013 for 遍历表时修改表 / Table mutated during for-iteration
+
+* 触发条件 / Trigger：`for x in t { ... }` 的循环体内对同一张表 `t` 调用写方法
+  （`table_push` / `table_pop` / `table_set` / `table_remove` / `table_insert` / …）。
+* 潜在影响 / Impact：遍历过程中增删元素使遍历结果不可预期（可能跳过或重复元素）。
+* 处理建议 / Remedy：遍历副本，或按索引倒序删除。
+
+## W00016 可变全局表共享状态 / Shared mutable global table
+
+* 触发条件 / Trigger：顶层（全局）`var x: table<...>` 在全程序内存在 **≥2 处**不同
+  写点（整体重赋值，或下标写 `x[i] = v`）。
+* 潜在影响 / Impact：全局可变表被多处修改，状态难以追踪，跨调用产生隐性耦合。
+* 处理建议 / Remedy：收敛至模块内，或改为参数传递。
+
+## W00019 表元素越界写静默失败 / Out-of-bounds table element write
+
+* 触发条件 / Trigger：`t[i] = v` 且 `i` 为整数字面量、`t` 的静态长度可确定
+  （`var t = [ ... ]` 且 `t` 在函数体内仅被下标赋值使用）且 `i >= len`。
+* 潜在影响 / Impact：`t[i] = v` 在 i ≥ len 时被静默丢弃，数据丢失且无报错。
+* 处理建议 / Remedy：使用 `table_push` 追加。
+
+## W00027 整数除零 / Integer division by literal zero
+
+* 触发条件 / Trigger：`/` 或 `%`（仅整数运算）的除数为整数字面量 `0`。
+* 潜在影响 / Impact：LLVM `sdiv` / `srem` 以 0 为除数是未定义行为，运行期崩溃。
+* 处理建议 / Remedy：检查除数来源并加非零判断。
+
+## W00028 switch 缺少 default / switch missing default
+
+* 触发条件 / Trigger：`switch` 无 `default` 分支且被匹配值类型非 enum（enum 有穷尽
+  检查兜底，不重复报）。
+* 潜在影响 / Impact：未匹配任何 case 时静默无操作，通常是漏写 `default`；新增取值后
+  会静默漏处理。
+* 处理建议 / Remedy：补 `default` 分支明确意图。
+
+## 其余经验型警告（已发射，简表）/ Other emitted empirical warnings
 
 | 标号 | 名称 | 潜在影响 | 处理建议 |
 | --- | --- | --- | --- |
-| W00005 | 未使用局部变量 | 代码具有误导性（看似使用实则未用），维护时难以判断可否删除 | 删除，或以 `_` 前缀表明有意不使用 |
-| W00006 | 未使用函数/方法 | 死代码扩充 API 面并产生误导 | 删除 |
-| W00007 | 未使用 import/using | 依赖面冗余，重命名时易造成误伤 | 删除未使用 import |
 | W00008 | 变量遮蔽 | 内层同名变量遮蔽外层，阅读与引用时易误用 | 重命名内层变量 |
 | W00009 | return 后不可达语句 | 语句恒不执行，多为分支错误 | 删除或移入正确分支 |
 | W00010 | 空语句块 | 占位且无注释，意图不明 | 补充注释或删除 |
 | W00011 | 函数参数未使用 | 参数表与实际行为不符 | 删除，或以 `_` 前缀声明 |
 | W00012 | 魔法数字 | 字面量含义不明，局部修改易遗漏 | 使用命名常量 `const` |
-| W00013 | for 遍历表时修改表 | 追加/删除元素使遍历结果不可预期 | 遍历副本，或按索引倒序删除 |
 | W00014 | 布尔参数调用 | `foo(true)` 无法表达参数语义 | 使用命名常量或枚举参数 |
 | W00015 | 可变绑定未修改 | 声明 `var` 却从未赋值，应使用 `const` | 改为 `const` |
-| W00016 | 可变全局表共享状态 | 全局可变表被多处修改，状态难以追踪 | 收敛至模块内或改参数传递 |
 | W00017 | 嵌套过深 | 可读性显著下降，重构成本高 | 提取函数或提前返回 |
 | W00018 | 大整数字面量溢出风险 | 超出目标窄类型范围时静默回绕 | 使用显式后缀（`i32`/`u8`）或转换前检查 |
-| W00019 | 表元素越界写静默失败 | `t[i] = v` 在 i ≥ len 时静默丢弃 | 使用 `table_push` 追加 |
+
+## 规划中（尚未实现）/ Planned (not yet implemented)
+
+| 标号 | 名称 | 潜在影响 | 处理建议 |
+| --- | --- | --- | --- |
+| W00006 | 未使用函数/方法 | 死代码扩充 API 面并产生误导 | 删除 |
+| W00007 | 未使用 import/using | 依赖面冗余，重命名时易造成误伤 | 删除未使用 import |
 
 EN: W00001 float equality (use eps-range comparison), W00002 integer division
 truncation, W00003 O(n²) loop string concatenation (use string_builder),
-W00004 table copy shares storage (use clone), W00020–W00023 role
-configuration/registration issues; W00005–W00019 planned checks with impact
-and remedy above.
+W00004 table copy shares storage (use clone); emitted empirical checks
+W00005/W00013/W00016/W00019 plus W00027 integer division by literal zero and
+W00028 switch missing default (details above); W00020–W00023 role
+configuration/registration issues; W00006 unused function/method and W00007
+unused import remain planned.
